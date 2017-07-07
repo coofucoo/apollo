@@ -1,17 +1,5 @@
 package com.ctrip.framework.apollo.internals;
 
-import com.google.common.collect.ImmutableMap;
-
-import com.ctrip.framework.apollo.core.utils.ClassLoaderUtil;
-import com.ctrip.framework.apollo.enums.PropertyChangeType;
-import com.ctrip.framework.apollo.model.ConfigChange;
-import com.ctrip.framework.apollo.model.ConfigChangeEvent;
-import com.ctrip.framework.apollo.util.ExceptionUtil;
-import com.dianping.cat.Cat;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Collections;
@@ -21,6 +9,17 @@ import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.ctrip.framework.apollo.core.utils.ClassLoaderUtil;
+import com.ctrip.framework.apollo.enums.PropertyChangeType;
+import com.ctrip.framework.apollo.model.ConfigChange;
+import com.ctrip.framework.apollo.model.ConfigChangeEvent;
+import com.ctrip.framework.apollo.tracer.Tracer;
+import com.ctrip.framework.apollo.util.ExceptionUtil;
+import com.google.common.collect.ImmutableMap;
 
 
 /**
@@ -51,7 +50,7 @@ public class DefaultConfig extends AbstractConfig implements RepositoryChangeLis
     try {
       m_configProperties.set(m_configRepository.getConfig());
     } catch (Throwable ex) {
-      Cat.logError(ex);
+      Tracer.logError(ex);
       logger.warn("Init Apollo Local Config failed - namespace: {}, reason: {}.",
           m_namespace, ExceptionUtil.getDetailMessage(ex));
     } finally {
@@ -86,7 +85,8 @@ public class DefaultConfig extends AbstractConfig implements RepositoryChangeLis
     }
 
     if (value == null && m_configProperties.get() == null) {
-      logger.warn("Could not load config for namespace {} from Apollo, please check whether the configs are released in Apollo! Return default value now!", m_namespace);
+      logger.warn("Could not load config for namespace {} from Apollo, please check whether the configs are released " +
+          "in Apollo! Return default value now!", m_namespace);
     }
 
     return value == null ? defaultValue : value;
@@ -119,7 +119,7 @@ public class DefaultConfig extends AbstractConfig implements RepositoryChangeLis
 
     this.fireConfigChange(new ConfigChangeEvent(m_namespace, actualChanges));
 
-    Cat.logEvent("Apollo.Client.ConfigChanges", m_namespace);
+    Tracer.logEvent("Apollo.Client.ConfigChanges", m_namespace);
   }
 
   private Map<String, ConfigChange> updateAndCalcConfigChanges(Properties newConfigProperties) {
@@ -138,6 +138,7 @@ public class DefaultConfig extends AbstractConfig implements RepositoryChangeLis
 
     //2. update m_configProperties
     m_configProperties.set(newConfigProperties);
+    clearConfigCache();
 
     //3. use getProperty to update configChange's new value and calc the final changes
     for (ConfigChange change : configChanges) {
@@ -185,7 +186,7 @@ public class DefaultConfig extends AbstractConfig implements RepositoryChangeLis
       try {
         properties.load(in);
       } catch (IOException ex) {
-        Cat.logError(ex);
+        Tracer.logError(ex);
         logger.error("Load resource config for namespace {} failed", namespace, ex);
       } finally {
         try {

@@ -1,20 +1,20 @@
 package com.ctrip.framework.apollo.biz.service;
 
-import java.util.Date;
-import java.util.List;
+import com.ctrip.framework.apollo.biz.AbstractIntegrationTest;
+import com.ctrip.framework.apollo.biz.entity.Audit;
+import com.ctrip.framework.apollo.biz.entity.Cluster;
+import com.ctrip.framework.apollo.biz.entity.Namespace;
+import com.ctrip.framework.apollo.biz.repository.AppRepository;
+import com.ctrip.framework.apollo.common.entity.App;
+import com.ctrip.framework.apollo.common.exception.ServiceException;
+import com.ctrip.framework.apollo.core.ConfigConsts;
 
 import org.junit.Assert;
 import org.junit.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 
-import com.ctrip.framework.apollo.biz.AbstractIntegrationTest;
-import com.ctrip.framework.apollo.common.entity.App;
-import com.ctrip.framework.apollo.biz.entity.Audit;
-import com.ctrip.framework.apollo.biz.entity.Cluster;
-import com.ctrip.framework.apollo.biz.entity.Namespace;
-import com.ctrip.framework.apollo.biz.repository.AppRepository;
-import com.ctrip.framework.apollo.core.ConfigConsts;
-import com.ctrip.framework.apollo.common.exception.ServiceException;
+import java.util.Date;
+import java.util.List;
 
 public class AdminServiceTest extends AbstractIntegrationTest{
 
@@ -28,7 +28,7 @@ public class AdminServiceTest extends AbstractIntegrationTest{
   private AppRepository appRepository;
 
   @Autowired
-  private ClusterService clsuterService;
+  private ClusterService clusterService;
 
   @Autowired
   private NamespaceService namespaceService;
@@ -49,7 +49,7 @@ public class AdminServiceTest extends AbstractIntegrationTest{
     app = adminService.createNewApp(app);
     Assert.assertEquals(appId, app.getAppId());
 
-    List<Cluster> clusters = clsuterService.findClusters(app.getAppId());
+    List<Cluster> clusters = clusterService.findParentClusters(app.getAppId());
     Assert.assertEquals(1, clusters.size());
     Assert.assertEquals(ConfigConsts.CLUSTER_NAME_DEFAULT, clusters.get(0).getName());
 

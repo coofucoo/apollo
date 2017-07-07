@@ -1,34 +1,5 @@
 package com.ctrip.framework.apollo.internals;
 
-import com.google.common.base.Joiner;
-import com.google.common.base.Strings;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
-import com.google.common.escape.Escaper;
-import com.google.common.net.UrlEscapers;
-import com.google.common.util.concurrent.RateLimiter;
-
-import com.ctrip.framework.apollo.Apollo;
-import com.ctrip.framework.apollo.core.ConfigConsts;
-import com.ctrip.framework.apollo.core.dto.ApolloConfig;
-import com.ctrip.framework.apollo.core.dto.ServiceDTO;
-import com.ctrip.framework.apollo.core.utils.ApolloThreadFactory;
-import com.ctrip.framework.apollo.exceptions.ApolloConfigException;
-import com.ctrip.framework.apollo.exceptions.ApolloConfigStatusCodeException;
-import com.ctrip.framework.apollo.util.ConfigUtil;
-import com.ctrip.framework.apollo.util.http.HttpRequest;
-import com.ctrip.framework.apollo.util.http.HttpResponse;
-import com.ctrip.framework.apollo.util.http.HttpUtil;
-import com.dianping.cat.Cat;
-import com.dianping.cat.message.Message;
-import com.dianping.cat.message.Transaction;
-
-import org.codehaus.plexus.PlexusContainer;
-import org.codehaus.plexus.component.repository.exception.ComponentLookupException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.unidal.lookup.ContainerLoader;
-
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -38,6 +9,32 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.ctrip.framework.apollo.Apollo;
+import com.ctrip.framework.apollo.build.ApolloInjector;
+import com.ctrip.framework.apollo.core.ConfigConsts;
+import com.ctrip.framework.apollo.core.dto.ApolloConfig;
+import com.ctrip.framework.apollo.core.dto.ServiceDTO;
+import com.ctrip.framework.apollo.core.utils.ApolloThreadFactory;
+import com.ctrip.framework.apollo.exceptions.ApolloConfigException;
+import com.ctrip.framework.apollo.exceptions.ApolloConfigStatusCodeException;
+import com.ctrip.framework.apollo.tracer.Tracer;
+import com.ctrip.framework.apollo.tracer.spi.Transaction;
+import com.ctrip.framework.apollo.util.ConfigUtil;
+import com.ctrip.framework.apollo.util.ExceptionUtil;
+import com.ctrip.framework.apollo.util.http.HttpRequest;
+import com.ctrip.framework.apollo.util.http.HttpResponse;
+import com.ctrip.framework.apollo.util.http.HttpUtil;
+import com.google.common.base.Joiner;
+import com.google.common.base.Strings;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
+import com.google.common.escape.Escaper;
+import com.google.common.net.UrlEscapers;
+import com.google.common.util.concurrent.RateLimiter;
+
 /**
  * @author Jason Song(song_s@ctrip.com)
  */
@@ -45,11 +42,10 @@ public class RemoteConfigRepository extends AbstractConfigRepository {
   private static final Logger logger = LoggerFactory.getLogger(RemoteConfigRepository.class);
   private static final Joiner STRING_JOINER = Joiner.on(ConfigConsts.CLUSTER_NAMESPACE_SEPARATOR);
   private static final Joiner.MapJoiner MAP_JOINER = Joiner.on("&").withKeyValueSeparator("=");
-  private PlexusContainer m_container;
-  private final ConfigServiceLocator m_serviceLocator;
-  private final HttpUtil m_httpUtil;
-  private final ConfigUtil m_configUtil;
-  private final RemoteConfigLongPollService remoteConfigLongPollService;
+  private ConfigServiceLocator m_serviceLocator;
+  private HttpUtil m_httpUtil;
+  private ConfigUtil m_configUtil;
+  private RemoteConfigLongPollService remoteConfigLongPollService;
   private volatile AtomicReference<ApolloConfig> m_configCache;
   private final String m_namespace;
   private final static ScheduledExecutorService m_executorService;
@@ -71,16 +67,10 @@ public class RemoteConfigRepository extends AbstractConfigRepository {
   public RemoteConfigRepository(String namespace) {
     m_namespace = namespace;
     m_configCache = new AtomicReference<>();
-    m_container = ContainerLoader.getDefaultContainer();
-    try {
-      m_configUtil = m_container.lookup(ConfigUtil.class);
-      m_httpUtil = m_container.lookup(HttpUtil.class);
-      m_serviceLocator = m_container.lookup(ConfigServiceLocator.class);
-      remoteConfigLongPollService = m_container.lookup(RemoteConfigLongPollService.class);
-    } catch (ComponentLookupException ex) {
-      Cat.logError(ex);
-      throw new ApolloConfigException("Unable to load component!", ex);
-    }
+    m_configUtil = ApolloInjector.getInstance(ConfigUtil.class);
+    m_httpUtil = ApolloInjector.getInstance(HttpUtil.class);
+    m_serviceLocator = ApolloInjector.getInstance(ConfigServiceLocator.class);
+    remoteConfigLongPollService = ApolloInjector.getInstance(RemoteConfigLongPollService.class);
     m_longPollServiceDto = new AtomicReference<>();
     m_loadConfigRateLimiter = RateLimiter.create(m_configUtil.getLoadConfigQPS());
     this.trySync();
@@ -108,10 +98,10 @@ public class RemoteConfigRepository extends AbstractConfigRepository {
         new Runnable() {
           @Override
           public void run() {
-            Cat.logEvent("Apollo.ConfigService", String.format("periodicRefresh: %s", m_namespace));
+            Tracer.logEvent("Apollo.ConfigService", String.format("periodicRefresh: %s", m_namespace));
             logger.debug("refresh config for namespace: {}", m_namespace);
             trySync();
-            Cat.logEvent("Apollo.Client.Version", Apollo.VERSION);
+            Tracer.logEvent("Apollo.Client.Version", Apollo.VERSION);
           }
         }, m_configUtil.getRefreshInterval(), m_configUtil.getRefreshInterval(),
         m_configUtil.getRefreshIntervalTimeUnit());
@@ -119,7 +109,7 @@ public class RemoteConfigRepository extends AbstractConfigRepository {
 
   @Override
   protected synchronized void sync() {
-    Transaction transaction = Cat.newTransaction("Apollo.ConfigService", "syncRemoteConfig");
+    Transaction transaction = Tracer.newTransaction("Apollo.ConfigService", "syncRemoteConfig");
 
     try {
       ApolloConfig previous = m_configCache.get();
@@ -133,11 +123,11 @@ public class RemoteConfigRepository extends AbstractConfigRepository {
       }
 
       if (current != null) {
-        Cat.logEvent(String.format("Apollo.Client.Configs.%s", current.getNamespaceName()),
+        Tracer.logEvent(String.format("Apollo.Client.Configs.%s", current.getNamespaceName()),
             current.getReleaseKey());
       }
 
-      transaction.setStatus(Message.SUCCESS);
+      transaction.setStatus(Transaction.SUCCESS);
     } catch (Throwable ex) {
       transaction.setStatus(ex);
       throw ex;
@@ -163,7 +153,7 @@ public class RemoteConfigRepository extends AbstractConfigRepository {
     String appId = m_configUtil.getAppId();
     String cluster = m_configUtil.getCluster();
     String dataCenter = m_configUtil.getDataCenter();
-    Cat.logEvent("Apollo.Client.ConfigMeta", STRING_JOINER.join(appId, cluster, m_namespace));
+    Tracer.logEvent("Apollo.Client.ConfigMeta", STRING_JOINER.join(appId, cluster, m_namespace));
     int maxRetries = 2;
     Throwable exception = null;
 
@@ -184,14 +174,14 @@ public class RemoteConfigRepository extends AbstractConfigRepository {
         logger.debug("Loading config from {}", url);
         HttpRequest request = new HttpRequest(url);
 
-        Transaction transaction = Cat.newTransaction("Apollo.ConfigService", "queryConfig");
+        Transaction transaction = Tracer.newTransaction("Apollo.ConfigService", "queryConfig");
         transaction.addData("Url", url);
         try {
 
           HttpResponse<ApolloConfig> response = m_httpUtil.doGet(request, ApolloConfig.class);
 
           transaction.addData("StatusCode", response.getStatusCode());
-          transaction.setStatus(Message.SUCCESS);
+          transaction.setStatus(Transaction.SUCCESS);
 
           if (response.getStatusCode() == 304) {
             logger.debug("Config server responds with 304 HTTP status code.");
@@ -214,11 +204,11 @@ public class RemoteConfigRepository extends AbstractConfigRepository {
             statusCodeException = new ApolloConfigStatusCodeException(ex.getStatusCode(),
                 message);
           }
-          Cat.logError(statusCodeException);
+          Tracer.logEvent("ApolloConfigException", ExceptionUtil.getDetailMessage(statusCodeException));
           transaction.setStatus(statusCodeException);
           exception = statusCodeException;
         } catch (Throwable ex) {
-          Cat.logError(ex);
+          Tracer.logEvent("ApolloConfigException", ExceptionUtil.getDetailMessage(ex));
           transaction.setStatus(ex);
           exception = ex;
         } finally {
@@ -228,7 +218,7 @@ public class RemoteConfigRepository extends AbstractConfigRepository {
       }
 
       try {
-        TimeUnit.SECONDS.sleep(1);
+        m_configUtil.getOnErrorRetryIntervalTimeUnit().sleep(m_configUtil.getOnErrorRetryInterval());
       } catch (InterruptedException ex) {
         //ignore
       }

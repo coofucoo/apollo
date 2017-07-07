@@ -12,17 +12,19 @@ import com.google.common.collect.Sets;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
+import com.ctrip.framework.apollo.biz.config.BizConfig;
 import com.ctrip.framework.apollo.biz.entity.ReleaseMessage;
 import com.ctrip.framework.apollo.biz.message.ReleaseMessageListener;
 import com.ctrip.framework.apollo.biz.message.Topics;
-import com.ctrip.framework.apollo.biz.service.ReleaseMessageService;
 import com.ctrip.framework.apollo.biz.utils.EntityManagerUtil;
+import com.ctrip.framework.apollo.common.exception.BadRequestException;
+import com.ctrip.framework.apollo.configservice.service.ReleaseMessageServiceWithCache;
 import com.ctrip.framework.apollo.configservice.util.NamespaceUtil;
 import com.ctrip.framework.apollo.configservice.util.WatchKeysUtil;
 import com.ctrip.framework.apollo.core.ConfigConsts;
 import com.ctrip.framework.apollo.core.dto.ApolloConfigNotification;
-import com.ctrip.framework.apollo.common.exception.BadRequestException;
-import com.dianping.cat.Cat;
+import com.ctrip.framework.apollo.core.utils.ApolloThreadFactory;
+import com.ctrip.framework.apollo.tracer.Tracer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,6 +43,9 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * @author Jason Song(song_s@ctrip.com)
@@ -61,11 +66,13 @@ public class NotificationControllerV2 implements ReleaseMessageListener {
       new TypeToken<List<ApolloConfigNotification>>() {
       }.getType();
 
+  private final ExecutorService largeNotificationBatchExecutorService;
+
   @Autowired
   private WatchKeysUtil watchKeysUtil;
 
   @Autowired
-  private ReleaseMessageService releaseMessageService;
+  private ReleaseMessageServiceWithCache releaseMessageService;
 
   @Autowired
   private EntityManagerUtil entityManagerUtil;
@@ -75,6 +82,14 @@ public class NotificationControllerV2 implements ReleaseMessageListener {
 
   @Autowired
   private Gson gson;
+
+  @Autowired
+  private BizConfig bizConfig;
+
+  public NotificationControllerV2() {
+    largeNotificationBatchExecutorService = Executors.newSingleThreadExecutor(ApolloThreadFactory.create
+        ("NotificationControllerV2", true));
+  }
 
   @RequestMapping(method = RequestMethod.GET)
   public DeferredResult<ResponseEntity<List<ApolloConfigNotification>>> pollNotification(
@@ -89,7 +104,7 @@ public class NotificationControllerV2 implements ReleaseMessageListener {
       notifications =
           gson.fromJson(notificationsAsString, notificationsTypeReference);
     } catch (Throwable ex) {
-      Cat.logError(ex);
+      Tracer.logError(ex);
     }
 
     if (CollectionUtils.isEmpty(notifications)) {
@@ -197,7 +212,7 @@ public class NotificationControllerV2 implements ReleaseMessageListener {
     logger.info("message received - channel: {}, message: {}", channel, message);
 
     String content = message.getMessage();
-    Cat.logEvent("Apollo.LongPoll.Messages", content);
+    Tracer.logEvent("Apollo.LongPoll.Messages", content);
     if (!Topics.APOLLO_RELEASE_TOPIC.equals(channel) || Strings.isNullOrEmpty(content)) {
       return;
     }
@@ -220,6 +235,27 @@ public class NotificationControllerV2 implements ReleaseMessageListener {
     //create a new list to avoid ConcurrentModificationException
     List<DeferredResult<ResponseEntity<List<ApolloConfigNotification>>>> results =
         Lists.newArrayList(deferredResults.get(content));
+
+    //do async notification if too many clients
+    if (results.size() > bizConfig.releaseMessageNotificationBatch()) {
+      largeNotificationBatchExecutorService.submit(() -> {
+        logger.debug("Async notify {} clients for key {} with batch {}", results.size(), content,
+            bizConfig.releaseMessageNotificationBatch());
+        for (int i = 0; i < results.size(); i++) {
+          if (i > 0 && i % bizConfig.releaseMessageNotificationBatch() == 0) {
+            try {
+              TimeUnit.MILLISECONDS.sleep(bizConfig.releaseMessageNotificationBatchIntervalInMilli());
+            } catch (InterruptedException e) {
+              //ignore
+            }
+          }
+          logger.debug("Async notify {}", results.get(i));
+          results.get(i).setResult(notification);
+        }
+      });
+      return;
+    }
+
     logger.debug("Notify {} clients for key {}", results.size(), content);
 
     for (DeferredResult<ResponseEntity<List<ApolloConfigNotification>>> result : results) {
@@ -244,7 +280,7 @@ public class NotificationControllerV2 implements ReleaseMessageListener {
 
   private void logWatchedKeysToCat(Set<String> watchedKeys, String eventName) {
     for (String watchedKey : watchedKeys) {
-      Cat.logEvent(eventName, watchedKey);
+      Tracer.logEvent(eventName, watchedKey);
     }
   }
 }

@@ -1,21 +1,11 @@
 package com.ctrip.framework.apollo.internals;
 
-import com.google.common.base.Charsets;
-import com.google.common.base.Joiner;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.io.Files;
-import com.google.common.util.concurrent.SettableFuture;
-
-import com.ctrip.framework.apollo.Config;
-import com.ctrip.framework.apollo.ConfigChangeListener;
-import com.ctrip.framework.apollo.core.utils.ClassLoaderUtil;
-import com.ctrip.framework.apollo.enums.PropertyChangeType;
-import com.ctrip.framework.apollo.model.ConfigChange;
-import com.ctrip.framework.apollo.model.ConfigChangeEvent;
-
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import java.io.File;
 import java.util.Calendar;
@@ -23,10 +13,23 @@ import java.util.Date;
 import java.util.Properties;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+
+import com.ctrip.framework.apollo.Config;
+import com.ctrip.framework.apollo.ConfigChangeListener;
+import com.ctrip.framework.apollo.build.MockInjector;
+import com.ctrip.framework.apollo.core.utils.ClassLoaderUtil;
+import com.ctrip.framework.apollo.enums.PropertyChangeType;
+import com.ctrip.framework.apollo.model.ConfigChange;
+import com.ctrip.framework.apollo.model.ConfigChangeEvent;
+import com.ctrip.framework.apollo.util.ConfigUtil;
+import com.google.common.base.Charsets;
+import com.google.common.base.Joiner;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.io.Files;
+import com.google.common.util.concurrent.SettableFuture;
 
 /**
  * @author Jason Song(song_s@ctrip.com)
@@ -39,6 +42,9 @@ public class DefaultConfigTest {
 
   @Before
   public void setUp() throws Exception {
+    MockInjector.reset();
+    MockInjector.setInstance(ConfigUtil.class, new MockConfigUtil());
+
     someResourceDir = new File(ClassLoaderUtil.getClassPath() + "/META-INF/config");
     someResourceDir.mkdirs();
     someNamespace = "someName";
@@ -128,6 +134,120 @@ public class DefaultConfigTest {
 
     assertEquals(someValue, defaultConfig.getIntProperty(someKey, someDefaultValue));
     assertEquals(someDefaultValue, defaultConfig.getIntProperty(someStringKey, someDefaultValue));
+  }
+
+  @Test
+  public void testGetIntPropertyMultipleTimesWithCache() throws Exception {
+    String someKey = "someKey";
+    Integer someValue = 2;
+
+    Integer someDefaultValue = -1;
+
+    //set up config repo
+    someProperties = mock(Properties.class);
+    when(someProperties.getProperty(someKey)).thenReturn(String.valueOf(someValue));
+    when(configRepository.getConfig()).thenReturn(someProperties);
+
+    DefaultConfig defaultConfig =
+        new DefaultConfig(someNamespace, configRepository);
+
+    assertEquals(someValue, defaultConfig.getIntProperty(someKey, someDefaultValue));
+    assertEquals(someValue, defaultConfig.getIntProperty(someKey, someDefaultValue));
+    assertEquals(someValue, defaultConfig.getIntProperty(someKey, someDefaultValue));
+
+    verify(someProperties, times(1)).getProperty(someKey);
+  }
+
+  @Test
+  public void testGetIntPropertyMultipleTimesWithPropertyChanges() throws Exception {
+    String someKey = "someKey";
+    Integer someValue = 2;
+    Integer anotherValue = 3;
+
+    Integer someDefaultValue = -1;
+
+    //set up config repo
+    someProperties = new Properties();
+    someProperties.setProperty(someKey, String.valueOf(someValue));
+    when(configRepository.getConfig()).thenReturn(someProperties);
+
+    DefaultConfig defaultConfig =
+        new DefaultConfig(someNamespace, configRepository);
+
+    assertEquals(someValue, defaultConfig.getIntProperty(someKey, someDefaultValue));
+
+    Properties anotherProperties = new Properties();
+    anotherProperties.setProperty(someKey, String.valueOf(anotherValue));
+
+    defaultConfig.onRepositoryChange(someNamespace, anotherProperties);
+
+    assertEquals(anotherValue, defaultConfig.getIntProperty(someKey, someDefaultValue));
+  }
+
+  @Test
+  public void testGetIntPropertyMultipleTimesWithSmallCache() throws Exception {
+    String someKey = "someKey";
+    Integer someValue = 2;
+
+    String anotherKey = "anotherKey";
+    Integer anotherValue = 3;
+
+    Integer someDefaultValue = -1;
+
+    MockInjector.setInstance(ConfigUtil.class, new MockConfigUtilWithSmallCache());
+
+    //set up config repo
+    someProperties = mock(Properties.class);
+    when(someProperties.getProperty(someKey)).thenReturn(String.valueOf(someValue));
+    when(someProperties.getProperty(anotherKey)).thenReturn(String.valueOf(anotherValue));
+    when(configRepository.getConfig()).thenReturn(someProperties);
+
+    DefaultConfig defaultConfig =
+        new DefaultConfig(someNamespace, configRepository);
+
+    assertEquals(someValue, defaultConfig.getIntProperty(someKey, someDefaultValue));
+    assertEquals(someValue, defaultConfig.getIntProperty(someKey, someDefaultValue));
+
+    verify(someProperties, times(1)).getProperty(someKey);
+
+    assertEquals(anotherValue, defaultConfig.getIntProperty(anotherKey, someDefaultValue));
+    assertEquals(anotherValue, defaultConfig.getIntProperty(anotherKey, someDefaultValue));
+
+    verify(someProperties, times(1)).getProperty(anotherKey);
+
+    assertEquals(someValue, defaultConfig.getIntProperty(someKey, someDefaultValue));
+
+    verify(someProperties, times(2)).getProperty(someKey);
+  }
+
+  @Test
+  public void testGetIntPropertyMultipleTimesWithShortExpireTime() throws Exception {
+    String someKey = "someKey";
+    Integer someValue = 2;
+
+    Integer someDefaultValue = -1;
+
+    MockInjector.setInstance(ConfigUtil.class, new MockConfigUtilWithShortExpireTime());
+
+    //set up config repo
+    someProperties = mock(Properties.class);
+    when(someProperties.getProperty(someKey)).thenReturn(String.valueOf(someValue));
+    when(configRepository.getConfig()).thenReturn(someProperties);
+
+    DefaultConfig defaultConfig =
+        new DefaultConfig(someNamespace, configRepository);
+
+    assertEquals(someValue, defaultConfig.getIntProperty(someKey, someDefaultValue));
+    assertEquals(someValue, defaultConfig.getIntProperty(someKey, someDefaultValue));
+
+    verify(someProperties, times(1)).getProperty(someKey);
+
+    TimeUnit.MILLISECONDS.sleep(50);
+
+    assertEquals(someValue, defaultConfig.getIntProperty(someKey, someDefaultValue));
+    assertEquals(someValue, defaultConfig.getIntProperty(someKey, someDefaultValue));
+
+    verify(someProperties, times(2)).getProperty(someKey);
   }
 
   @Test
@@ -288,7 +408,70 @@ public class DefaultConfigTest {
         new DefaultConfig(someNamespace, configRepository);
 
     assertArrayEquals(values, defaultConfig.getArrayProperty(someKey, someDelimiter, someDefaultValue));
-    assertArrayEquals(someDefaultValue, defaultConfig.getArrayProperty(someKey, someInvalidDelimiter, someDefaultValue));
+    assertArrayEquals(someDefaultValue, defaultConfig.getArrayProperty(someKey, someInvalidDelimiter,
+        someDefaultValue));
+  }
+
+  @Test
+  public void testGetArrayPropertyMultipleTimesWithCache() throws Exception {
+    String someKey = "someKey";
+    String someDelimiter = ",";
+    String someInvalidDelimiter = "{";
+
+    String[] values = new String[]{"a", "b", "c"};
+    String someValue = Joiner.on(someDelimiter).join(values);
+
+    String[] someDefaultValue = new String[]{"1", "2"};
+
+    //set up config repo
+    someProperties = mock(Properties.class);
+    when(someProperties.getProperty(someKey)).thenReturn(someValue);
+    when(configRepository.getConfig()).thenReturn(someProperties);
+
+    DefaultConfig defaultConfig =
+        new DefaultConfig(someNamespace, configRepository);
+
+    assertArrayEquals(values, defaultConfig.getArrayProperty(someKey, someDelimiter, someDefaultValue));
+    assertArrayEquals(values, defaultConfig.getArrayProperty(someKey, someDelimiter, someDefaultValue));
+
+    verify(someProperties, times(1)).getProperty(someKey);
+
+    assertArrayEquals(someDefaultValue, defaultConfig.getArrayProperty(someKey, someInvalidDelimiter,
+        someDefaultValue));
+    assertArrayEquals(someDefaultValue, defaultConfig.getArrayProperty(someKey, someInvalidDelimiter,
+        someDefaultValue));
+
+    verify(someProperties, times(3)).getProperty(someKey);
+  }
+
+  @Test
+  public void testGetArrayPropertyMultipleTimesWithCacheAndValueChanges() throws Exception {
+    String someKey = "someKey";
+    String someDelimiter = ",";
+
+    String[] values = new String[]{"a", "b", "c"};
+    String[] anotherValues = new String[]{"b", "c", "d"};
+    String someValue = Joiner.on(someDelimiter).join(values);
+    String anotherValue = Joiner.on(someDelimiter).join(anotherValues);
+
+    String[] someDefaultValue = new String[]{"1", "2"};
+
+    //set up config repo
+    someProperties = new Properties();
+    someProperties.setProperty(someKey, someValue);
+    when(configRepository.getConfig()).thenReturn(someProperties);
+
+    Properties anotherProperties = new Properties();
+    anotherProperties.setProperty(someKey, anotherValue);
+
+    DefaultConfig defaultConfig =
+        new DefaultConfig(someNamespace, configRepository);
+
+    assertArrayEquals(values, defaultConfig.getArrayProperty(someKey, someDelimiter, someDefaultValue));
+
+    defaultConfig.onRepositoryChange(someNamespace, anotherProperties);
+
+    assertArrayEquals(anotherValues, defaultConfig.getArrayProperty(someKey, someDelimiter, someDefaultValue));
   }
 
   @Test
@@ -311,9 +494,11 @@ public class DefaultConfigTest {
         new DefaultConfig(someNamespace, configRepository);
 
     checkDatePropertyWithFormat(defaultConfig, shortDate, "shortDateProperty", "yyyy-MM-dd", someDefaultValue);
-    checkDatePropertyWithFormat(defaultConfig, mediumDate, "mediumDateProperty", "yyyy-MM-dd HH:mm:ss", someDefaultValue);
+    checkDatePropertyWithFormat(defaultConfig, mediumDate, "mediumDateProperty", "yyyy-MM-dd HH:mm:ss",
+        someDefaultValue);
     checkDatePropertyWithFormat(defaultConfig, shortDate, "mediumDateProperty", "yyyy-MM-dd", someDefaultValue);
-    checkDatePropertyWithFormat(defaultConfig, longDate, "longDateProperty", "yyyy-MM-dd HH:mm:ss.SSS", someDefaultValue);
+    checkDatePropertyWithFormat(defaultConfig, longDate, "longDateProperty", "yyyy-MM-dd HH:mm:ss.SSS",
+        someDefaultValue);
     checkDatePropertyWithFormat(defaultConfig, mediumDate, "longDateProperty", "yyyy-MM-dd HH:mm:ss", someDefaultValue);
     checkDatePropertyWithFormat(defaultConfig, shortDate, "longDateProperty", "yyyy-MM-dd", someDefaultValue);
     checkDatePropertyWithFormat(defaultConfig, someDefaultValue, "stringProperty", "yyyy-MM-dd", someDefaultValue);
@@ -460,7 +645,8 @@ public class DefaultConfigTest {
     assertEquals(PropertyChangeType.ADDED, newKeyChange.getChangeType());
   }
 
-  private void checkDatePropertyWithFormat(Config config, Date expected, String propertyName, String format, Date defaultValue) {
+  private void checkDatePropertyWithFormat(Config config, Date expected, String propertyName, String format, Date
+      defaultValue) {
     assertEquals(expected, config.getDateProperty(propertyName, format, defaultValue));
   }
 
@@ -478,5 +664,41 @@ public class DefaultConfigTest {
 
   private enum SomeEnum {
     someValue, defaultValue
+  }
+
+  public static class MockConfigUtil extends ConfigUtil {
+    @Override
+    public long getMaxConfigCacheSize() {
+      return 10;
+    }
+
+    @Override
+    public long getConfigCacheExpireTime() {
+      return 1;
+    }
+
+    @Override
+    public TimeUnit getConfigCacheExpireTimeUnit() {
+      return TimeUnit.MINUTES;
+    }
+  }
+
+  public static class MockConfigUtilWithSmallCache extends MockConfigUtil {
+    @Override
+    public long getMaxConfigCacheSize() {
+      return 1;
+    }
+  }
+
+  public static class MockConfigUtilWithShortExpireTime extends MockConfigUtil {
+    @Override
+    public long getConfigCacheExpireTime() {
+      return 50;
+    }
+
+    @Override
+    public TimeUnit getConfigCacheExpireTimeUnit() {
+      return TimeUnit.MILLISECONDS;
+    }
   }
 }

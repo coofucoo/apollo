@@ -2,11 +2,8 @@ spring:
   application:
     name: apollo-portal
   profiles:
-    active: ctrip
+    active: ${apollo_profile}
 
-ctrip:
-  appid: 100003173
-  
 server:
   port: 8080
   
@@ -22,3 +19,5 @@ management:
   health:
     status:
       order: DOWN, OUT_OF_SERVICE, UNKNOWN, UP 
+
+

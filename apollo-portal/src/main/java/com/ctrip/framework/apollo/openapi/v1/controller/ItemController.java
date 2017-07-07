@@ -8,7 +8,7 @@ import com.ctrip.framework.apollo.core.utils.StringUtils;
 import com.ctrip.framework.apollo.openapi.dto.OpenItemDTO;
 import com.ctrip.framework.apollo.openapi.util.OpenApiBeanUtils;
 import com.ctrip.framework.apollo.portal.service.ItemService;
-import com.ctrip.framework.apollo.portal.service.UserService;
+import com.ctrip.framework.apollo.portal.spi.UserService;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -52,6 +52,8 @@ public class ItemController {
     toCreate.setLineNum(0);
     toCreate.setId(0);
     toCreate.setDataChangeLastModifiedBy(toCreate.getDataChangeCreatedBy());
+    toCreate.setDataChangeLastModifiedTime(null);
+    toCreate.setDataChangeCreatedTime(null);
 
     ItemDTO createdItem = itemService.createItem(appId, Env.fromString(env),
         clusterName, namespaceName, toCreate);

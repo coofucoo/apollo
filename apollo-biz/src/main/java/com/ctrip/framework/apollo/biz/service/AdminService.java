@@ -1,24 +1,21 @@
 package com.ctrip.framework.apollo.biz.service;
 
+import com.ctrip.framework.apollo.common.entity.App;
+import com.ctrip.framework.apollo.core.ConfigConsts;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
-import com.ctrip.framework.apollo.common.entity.App;
-import com.ctrip.framework.apollo.core.ConfigConsts;
 
 @Service
 public class AdminService {
 
   @Autowired
   private AppService appService;
-
   @Autowired
   private AppNamespaceService appNamespaceService;
-
   @Autowired
   private ClusterService clusterService;
-
   @Autowired
   private NamespaceService namespaceService;
 
@@ -33,9 +30,10 @@ public class AdminService {
 
     clusterService.createDefaultCluster(appId, createBy);
 
-    namespaceService.createPrivateNamespace(appId, ConfigConsts.CLUSTER_NAME_DEFAULT, createBy);
+    namespaceService.instanceOfAppNamespaces(appId, ConfigConsts.CLUSTER_NAME_DEFAULT, createBy);
 
     return app;
   }
+
 
 }

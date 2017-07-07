@@ -1,5 +1,34 @@
 package com.ctrip.framework.apollo.internals;
 
+import java.lang.reflect.Type;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.ctrip.framework.apollo.build.ApolloInjector;
+import com.ctrip.framework.apollo.core.ConfigConsts;
+import com.ctrip.framework.apollo.core.dto.ApolloConfigNotification;
+import com.ctrip.framework.apollo.core.dto.ServiceDTO;
+import com.ctrip.framework.apollo.core.enums.ConfigFileFormat;
+import com.ctrip.framework.apollo.core.schedule.ExponentialSchedulePolicy;
+import com.ctrip.framework.apollo.core.schedule.SchedulePolicy;
+import com.ctrip.framework.apollo.core.utils.ApolloThreadFactory;
+import com.ctrip.framework.apollo.exceptions.ApolloConfigException;
+import com.ctrip.framework.apollo.tracer.Tracer;
+import com.ctrip.framework.apollo.tracer.spi.Transaction;
+import com.ctrip.framework.apollo.util.ConfigUtil;
+import com.ctrip.framework.apollo.util.ExceptionUtil;
+import com.ctrip.framework.apollo.util.http.HttpRequest;
+import com.ctrip.framework.apollo.util.http.HttpResponse;
+import com.ctrip.framework.apollo.util.http.HttpUtil;
 import com.google.common.base.Joiner;
 import com.google.common.base.Strings;
 import com.google.common.collect.HashMultimap;
@@ -13,45 +42,10 @@ import com.google.common.reflect.TypeToken;
 import com.google.common.util.concurrent.RateLimiter;
 import com.google.gson.Gson;
 
-import com.ctrip.framework.apollo.core.ConfigConsts;
-import com.ctrip.framework.apollo.core.dto.ApolloConfigNotification;
-import com.ctrip.framework.apollo.core.dto.ServiceDTO;
-import com.ctrip.framework.apollo.core.enums.ConfigFileFormat;
-import com.ctrip.framework.apollo.core.schedule.ExponentialSchedulePolicy;
-import com.ctrip.framework.apollo.core.schedule.SchedulePolicy;
-import com.ctrip.framework.apollo.core.utils.ApolloThreadFactory;
-import com.ctrip.framework.apollo.exceptions.ApolloConfigException;
-import com.ctrip.framework.apollo.util.ConfigUtil;
-import com.ctrip.framework.apollo.util.ExceptionUtil;
-import com.ctrip.framework.apollo.util.http.HttpRequest;
-import com.ctrip.framework.apollo.util.http.HttpResponse;
-import com.ctrip.framework.apollo.util.http.HttpUtil;
-import com.dianping.cat.Cat;
-import com.dianping.cat.message.Message;
-import com.dianping.cat.message.Transaction;
-
-import org.codehaus.plexus.personality.plexus.lifecycle.phase.Initializable;
-import org.codehaus.plexus.personality.plexus.lifecycle.phase.InitializationException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.unidal.lookup.annotation.Inject;
-import org.unidal.lookup.annotation.Named;
-
-import java.lang.reflect.Type;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-
 /**
  * @author Jason Song(song_s@ctrip.com)
  */
-@Named(type = RemoteConfigLongPollService.class)
-public class RemoteConfigLongPollService implements Initializable {
+public class RemoteConfigLongPollService {
   private static final Logger logger = LoggerFactory.getLogger(RemoteConfigLongPollService.class);
   private static final Joiner STRING_JOINER = Joiner.on(ConfigConsts.CLUSTER_NAMESPACE_SEPARATOR);
   private static final Joiner.MapJoiner MAP_JOINER = Joiner.on("&").withKeyValueSeparator("=");
@@ -66,11 +60,8 @@ public class RemoteConfigLongPollService implements Initializable {
   private final ConcurrentMap<String, Long> m_notifications;
   private Type m_responseType;
   private Gson gson;
-  @Inject
   private ConfigUtil m_configUtil;
-  @Inject
   private HttpUtil m_httpUtil;
-  @Inject
   private ConfigServiceLocator m_serviceLocator;
 
   /**
@@ -88,10 +79,9 @@ public class RemoteConfigLongPollService implements Initializable {
     m_responseType = new TypeToken<List<ApolloConfigNotification>>() {
     }.getType();
     gson = new Gson();
-  }
-
-  @Override
-  public void initialize() throws InitializationException {
+    m_configUtil = ApolloInjector.getInstance(ConfigUtil.class);
+    m_httpUtil = ApolloInjector.getInstance(HttpUtil.class);
+    m_serviceLocator = ApolloInjector.getInstance(ConfigServiceLocator.class);
     m_longPollRateLimiter = RateLimiter.create(m_configUtil.getLongPollQPS());
   }
 
@@ -113,9 +103,18 @@ public class RemoteConfigLongPollService implements Initializable {
       final String appId = m_configUtil.getAppId();
       final String cluster = m_configUtil.getCluster();
       final String dataCenter = m_configUtil.getDataCenter();
+      final long longPollingInitialDelayInMills = m_configUtil.getLongPollingInitialDelayInMills();
       m_longPollingService.submit(new Runnable() {
         @Override
         public void run() {
+          if (longPollingInitialDelayInMills > 0) {
+            try {
+              logger.debug("Long polling will start in {} ms.", longPollingInitialDelayInMills);
+              TimeUnit.MILLISECONDS.sleep(longPollingInitialDelayInMills);
+            } catch (InterruptedException e) {
+              //ignore
+            }
+          }
           doLongPollingRefresh(appId, cluster, dataCenter);
         }
       });
@@ -123,7 +122,7 @@ public class RemoteConfigLongPollService implements Initializable {
       m_longPollStarted.set(false);
       ApolloConfigException exception =
           new ApolloConfigException("Schedule long polling refresh failed", ex);
-      Cat.logError(exception);
+      Tracer.logError(exception);
       logger.warn(ExceptionUtil.getDetailMessage(exception));
     }
   }
@@ -143,7 +142,7 @@ public class RemoteConfigLongPollService implements Initializable {
         } catch (InterruptedException e) {
         }
       }
-      Transaction transaction = Cat.newTransaction("Apollo.ConfigService", "pollNotification");
+      Transaction transaction = Tracer.newTransaction("Apollo.ConfigService", "pollNotification");
       try {
         if (lastServiceDto == null) {
           List<ServiceDTO> configServices = getConfigServices();
@@ -178,10 +177,10 @@ public class RemoteConfigLongPollService implements Initializable {
 
         m_longPollFailSchedulePolicyInSecond.success();
         transaction.addData("StatusCode", response.getStatusCode());
-        transaction.setStatus(Message.SUCCESS);
+        transaction.setStatus(Transaction.SUCCESS);
       } catch (Throwable ex) {
         lastServiceDto = null;
-        Cat.logError(ex);
+        Tracer.logEvent("ApolloConfigException", ExceptionUtil.getDetailMessage(ex));
         transaction.setStatus(ex);
         long sleepTimeInSecond = m_longPollFailSchedulePolicyInSecond.fail();
         logger.warn(
@@ -215,7 +214,7 @@ public class RemoteConfigLongPollService implements Initializable {
         try {
           remoteConfigRepository.onLongPollNotified(lastServiceDto);
         } catch (Throwable ex) {
-          Cat.logError(ex);
+          Tracer.logError(ex);
         }
       }
     }
